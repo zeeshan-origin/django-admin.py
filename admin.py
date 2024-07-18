@@ -9,10 +9,11 @@ from django.db                  import models
 from django.apps            import apps
 
 # Unfold 
-from unfold.admin                       import ModelAdmin
+from unfold.admin                       import ModelAdmin, TabularInline, StackedInline
 from import_export.admin                import ImportExportModelAdmin
 from unfold.contrib.import_export.forms import ExportForm, ImportForm
 from django.utils.translation           import gettext_lazy as _
+
 
 
 # Common Model
@@ -26,7 +27,7 @@ except ImportError:
 # CONFIG CONSTANTS
 admin.site.site_header  = 'WOLFx Admin'
 exempt                  = [] # modelname in this list will not be registered
-global_app_name         = 'api' # Replace '' with your app name
+global_app_name         = 'web' # Replace '' with your app name
 
 
 
@@ -97,17 +98,18 @@ class JsonEditorWidget(widgets.Widget):
         ''')
 
 
-class GenericStackedAdmin(admin.StackedInline):
+class GenericStackedAdmin(TabularInline):
     extra = 1
     # This method ensures the field order is correct for inlines as well
     def get_formset(self, request, obj=None, **kwargs):
-        formset = super().get_formset(request, obj, **kwargs)
-        form = formset.form
-        custom_order = [field for field in form.base_fields]
+        formset         = super().get_formset(request, obj, **kwargs)
+        form            = formset.form
+        # custom_order    = [field for field in form.base_fields]
         
         if COMMON_MODEL_AVAILABLE:
-            custom_order = [field for field in form.base_fields if field not in CommonModel._meta.fields]
-            custom_order += [field for field in CommonModel._meta.fields if field in form.base_fields]
+            exempt_common_model_fields = [field.column for field in CommonModel._meta.fields]
+            custom_order = [field for field in form.base_fields if field not in exempt_common_model_fields]
+            # custom_order += [field for field in CommonModel._meta.fields if field in form.base_fields]
         
         form.base_fields = {field: form.base_fields[field] for field in custom_order}
         return formset
@@ -164,9 +166,9 @@ class GenericAdmin(ModelAdmin, ImportExportModelAdmin):
         except:
             common_fields = []
 
-        other_fields = [field.name for field in self.model._meta.fields if field.name not in common_fields and field.editable and field.name != 'id']
-        m2m_fields = [field.name for field in self.model._meta.many_to_many]
-        other_fields += m2m_fields
+        other_fields    = [field.name for field in self.model._meta.fields if field.name not in common_fields and field.editable and field.name != 'id']
+        m2m_fields      = [field.name for field in self.model._meta.many_to_many]
+        other_fields    += m2m_fields
 
         fieldsets = [
             (self.model._meta.verbose_name.title(), {
