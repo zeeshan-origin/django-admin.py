@@ -1,3 +1,5 @@
+
+from pathlib                    import Path
 from django.contrib             import admin
 from django.forms.models        import modelform_factory
 from django.utils.translation   import gettext_lazy as _
@@ -31,9 +33,9 @@ except ImportError:
 
 
 # CONFIG CONSTANTS
-admin.site.site_header  = 'Django Admin'
 exempt                  = [] # modelname in this list will not be registered
-global_app_name         = 'api' # Replace '' with your app name
+current_file_path       = Path(__file__).resolve()
+global_app_name         = current_file_path.parent.name  # Assumes this file is in the app directory
 
 # It is used to map the models to their Resource models
 resource_class_mapping = {
