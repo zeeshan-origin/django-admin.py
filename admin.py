@@ -1,3 +1,4 @@
+from pathlib                    import Path
 from django.contrib             import admin
 from django.forms.models        import modelform_factory
 from django.utils.translation   import gettext_lazy as _
@@ -20,7 +21,26 @@ except ImportError:
 # CONFIG CONSTANTS
 admin.site.site_header  = 'WOLFx Admin'
 exempt                  = [] # modelname in this list will not be registered
-global_app_name         = 'web' # Replace '' with your app name
+
+# Derived from the directory holding this file, so the same admin.py works in
+# any app without editing. Override with a literal if your admin.py lives
+# somewhere other than the app package root.
+current_file_path       = Path(__file__).resolve()
+global_app_name         = current_file_path.parent.name
+
+
+def _as_field_list(value):
+    """Normalize an admin_meta field list.
+
+    Accepts a list, tuple, set, or a bare string. A bare string is the common
+    typo `('head')`, which Python evaluates to `"head"` rather than a tuple. Left
+    as a string it would be matched character by character, so wrap it.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    return list(value)
 
 
 
@@ -93,17 +113,34 @@ class JsonEditorWidget(widgets.Widget):
 
 class GenericStackedAdmin(admin.StackedInline):
     extra = 1
+
+    def __init__(self, parent_model, admin_site):
+        super().__init__(parent_model, admin_site)
+        self.admin_meta = getattr(self.model, 'admin_meta', {})
+
+        # Apply the inline model's own admin_meta, so an inline is configured
+        # from its model just like a top level admin is.
+        try:
+            if self.admin_meta:
+                for attr, value in self.admin_meta.items():
+                    setattr(self, attr, value)
+        except Exception:
+            pass
+
     # This method ensures the field order is correct for inlines as well
     def get_formset(self, request, obj=None, **kwargs):
         formset = super().get_formset(request, obj, **kwargs)
         form = formset.form
-        custom_order = [field for field in form.base_fields]
-        
+
+        # Move CommonModel bookkeeping fields to the end so the model's own
+        # fields come first. `form.base_fields` is keyed by field name, so
+        # compare against names rather than Field objects.
         if COMMON_MODEL_AVAILABLE:
-            custom_order = [field for field in form.base_fields if field not in CommonModel._meta.fields]
-            custom_order += [field for field in CommonModel._meta.fields if field in form.base_fields]
-        
-        form.base_fields = {field: form.base_fields[field] for field in custom_order}
+            common_names = [field.name for field in CommonModel._meta.fields]
+            custom_order = [name for name in form.base_fields if name not in common_names]
+            custom_order += [name for name in common_names if name in form.base_fields]
+            form.base_fields = {name: form.base_fields[name] for name in custom_order}
+
         return formset
 
 
@@ -121,7 +158,7 @@ class GenericAdmin(admin.ModelAdmin):
             if model.admin_meta:
                 for k,v in model.admin_meta.items():
                     self.__setattr__(k,v)
-        except:
+        except Exception:
             pass
         
         # Dynamic Actions from model
@@ -152,7 +189,7 @@ class GenericAdmin(admin.ModelAdmin):
         try:
             if issubclass(self.model, CommonModel):
                 common_fields = [field.name for field in CommonModel._meta.fields if field.editable]
-        except:
+        except Exception:
             common_fields = []
 
         other_fields = [field.name for field in self.model._meta.fields if field.name not in common_fields and field.editable and field.name != 'id']
@@ -194,10 +231,21 @@ class GenericAdmin(admin.ModelAdmin):
 
         return super().formfield_for_dbfield(db_field, request, **kwargs)
     
-    def get_readonly_fields(self, request, obj=None):
-        # Get a list of non-editable fields
-        readonly_fields = [field.name for field in self.model._meta.fields if (not field.editable or field.name == 'id')]
+    def has_add_permission(self, request):
+        """
+        Hide 'Add' button if 'single_entry' is True and an instance already exists.
+        """
+        if getattr(self.model, 'admin_meta', {}).get('single_entry') and self.model.objects.exists():
+            return False
+        return super().has_add_permission(request)
 
+    def get_readonly_fields(self, request, obj=None):
+        # Non-editable fields plus anything the model declared in admin_meta.
+        readonly_fields = [field.name for field in self.model._meta.fields if (not field.editable or field.name == 'id')]
+        readonly_fields += [
+            name for name in _as_field_list(self.admin_meta.get('readonly_fields'))
+            if name not in readonly_fields
+        ]
         return readonly_fields
     
     # Function to add actions to the admin class
@@ -234,6 +282,7 @@ class GenericAdmin(admin.ModelAdmin):
             'model'     : related_model,
             'fk_name'   : fk_name,
             'form'      : modelform_factory(related_model, exclude=[]),
+            'admin_meta': getattr(related_model, 'admin_meta', {}),
         }
 
         InlineAdminClass = type(inline_class_name, (GenericStackedAdmin,), class_attrs)
@@ -244,8 +293,14 @@ class GenericAdmin(admin.ModelAdmin):
         js = ('https://code.jquery.com/jquery-3.7.0.js', )
 
 
+# Register all models in the app.
+# Skipped: anything in `exempt`, django-simple-history shadow tables, and the
+# through models Django auto-creates for M2M fields (they would otherwise show
+# up in the admin as their own meaningless entries).
 app = apps.get_app_config(global_app_name)
 for model_name, model in app.models.items():
+    if model._meta.auto_created:
+        continue
     # If model_name consists history
     if model_name not in exempt and 'histor' not in model_name.lower():
         # print(model_name + ' '  + str(model))
